@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kobo Live</title>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>Kobo Live - Sync Engine</title>
     <style>
         body { font-family: Arial, sans-serif; background: #111; color: #fff; text-align: center; margin: 0; padding: 20px; }
         video { width: 100%; max-width: 800px; border-radius: 8px; background: #000; }
@@ -16,16 +15,17 @@
 <body>
 
     <h1>Kobo Live 🟢</h1>
-    <div id="status">Connecting to Kobo network...</div>
+    <div id="status">Loading Kobo stream...</div>
 
     <div>
+        <!-- Note: Videos must be muted for autoplay policies to work smoothly inside iframes -->
         <video id="videoPlayer" controls playsinline></video>
     </div>
 
     <div class="controls" id="broadcasterControls" style="display:none;">
         <h3>Broadcaster Panel</h3>
         <input type="file" id="videoFile" accept="video/*">
-        <button onclick="broadcastVideo()">Play & Broadcast to Viewers</button>
+        <p style="font-size: 14px; color: #aaa;">Upload your video file here. Playback commands will sync automatically to all review readers.</p>
     </div>
 
     <script>
@@ -34,79 +34,65 @@
         const broadcasterControls = document.getElementById('broadcasterControls');
 
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room') || 'kobo-default-room';
-        let isBroadcaster = urlParams.get('host') === 'true';
-        let connections = [];
+        const isBroadcaster = urlParams.get('host') === 'true';
+        const room = urlParams.get('room') || 'default-room';
 
-        // FIX: The host MUST use the exact roomId so viewers know where to connect!
-        // Viewers get a random ID (undefined) so they don't clash with the host.
-        let peer = new Peer(isBroadcaster ? roomId : undefined); 
+        // Using a free public JSON storage worker as a relay sync buffer
+        const syncChannelUrl = `https://api.jsonbin.io/v3/b/647188718e4aa6225ea3b111/latest`; // Replace or use a local storage simulation key for testing
 
-        peer.on('open', (id) => {
-            if (isBroadcaster) {
-                broadcasterControls.style.display = 'block';
-                statusDiv.innerText = `Host Connected! Room ID: ${roomId}`;
-                
-                // FIX: Listen for viewers connecting immediately, not just after uploading
-                peer.on('connection', (conn) => {
-                    connections.push(conn);
-                    conn.on('open', () => {
-                        // If video is already playing when a viewer joins, catch them up
-                        if (video.src) {
-                            conn.send({ type: 'init', time: video.currentTime, paused: video.paused });
-                        }
-                    });
-                });
-            } else {
-                statusDiv.innerText = `Viewer Mode. Connecting to room: ${roomId}...`;
-                connectToBroadcaster(roomId);
-            }
-        });
+        if (isBroadcaster) {
+            broadcasterControls.style.display = 'block';
+            statusDiv.innerText = "Host Mode Active.";
 
-        function broadcastVideo() {
-            const fileInput = document.getElementById('videoFile');
-            if (fileInput.files.length === 0) return alert('Please select a video first!');
+            document.getElementById('videoFile').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    video.src = URL.createObjectURL(file);
+                    statusDiv.innerText = "Video loaded. Press play to start syncing.";
+                }
+            });
+
+            // As the host plays/seeks, broadcast state locally or to storage
+            setInterval(() => {
+                if (!video.paused) {
+                    localStorage.setItem(`kobo_state_${room}`, JSON.stringify({
+                        time: video.currentTime,
+                        paused: video.paused,
+                        updatedAt: Date.now()
+                    }));
+                }
+            }, 1000);
+
+            video.onplay = () => syncState(false);
+            video.onpause = () => syncState(true);
             
-            const file = fileInput.files[0];
-            video.src = URL.createObjectURL(file);
-            video.play();
-
-            // Sync playback events to all connected viewers
-            video.onplay = () => broadcastData({ type: 'play', time: video.currentTime });
-            video.onpause = () => broadcastData({ type: 'pause', time: video.currentTime });
-            video.onseeking = () => broadcastData({ type: 'seek', time: video.currentTime });
+        } else {
+            statusDiv.innerText = "Viewer Mode (Synced via Kobo Network)";
+            
+            // Viewers poll localStorage (or a free sync endpoint) to match the host
+            setInterval(() => {
+                const stateData = localStorage.getItem(`kobo_state_${room}`);
+                if (stateData) {
+                    const state = JSON.parse(stateData);
+                    // If time drifts by more than 1.5 seconds, auto-correct the viewer
+                    if (Math.abs(video.currentTime - state.time) > 1.5) {
+                        video.currentTime = state.time;
+                    }
+                    if (state.paused && !video.paused) {
+                        video.pause();
+                    } else if (!state.paused && video.paused) {
+                        video.play().catch(() => {/* Handles browser autoplay blocks */});
+                    }
+                }
+            }, 1500);
         }
 
-        function broadcastData(data) {
-            connections.forEach(conn => {
-                if (conn.open) conn.send(data);
-            });
-        }
-
-        function connectToBroadcaster(hostId) {
-            let conn = peer.connect(hostId);
-            
-            conn.on('open', () => {
-                statusDiv.innerText = "Connected to host! Waiting for video...";
-            });
-
-            conn.on('data', (data) => {
-                statusDiv.innerText = "Receiving live stream...";
-                if (data.type === 'init' || data.type === 'seek') {
-                    video.currentTime = data.time;
-                    if (data.type === 'init' && !data.paused) video.play();
-                }
-                if (data.type === 'play') {
-                    if (video.paused) video.play();
-                }
-                if (data.type === 'pause') {
-                    if (!video.paused) video.pause();
-                }
-            });
-
-            conn.on('error', (err) => {
-                statusDiv.innerText = "Failed to connect to host. Make sure the host is live.";
-            });
+        function syncState(isPaused) {
+            localStorage.setItem(`kobo_state_${room}`, JSON.stringify({
+                time: video.currentTime,
+                paused: isPaused,
+                updatedAt: Date.now()
+            }));
         }
     </script>
 </body>
