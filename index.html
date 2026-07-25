@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kobo Live</title>
-    <!-- PeerJS CDN for free P2P connectivity -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; background: #111; color: #fff; text-align: center; margin: 0; padding: 20px; }
         video { width: 100%; max-width: 800px; border-radius: 8px; background: #000; }
         .controls { margin-top: 15px; }
-        input, button { padding: 10px; margin: 5px; font-size: 16px; }
+        input, button { padding: 10px; margin: 5px; font-size: 16px; cursor: pointer; }
+        #status { margin-bottom: 15px; font-weight: bold; color: #4CAF50; }
     </style>
 </head>
 <body>
@@ -33,61 +33,65 @@
         const statusDiv = document.getElementById('status');
         const broadcasterControls = document.getElementById('broadcasterControls');
 
-        // Generate a unique or shared room ID based on URL parameters (e.g., ?room=kobo1)
         const urlParams = new URLSearchParams(window.location.search);
         const roomId = urlParams.get('room') || 'kobo-default-room';
-
-        let peer = new Peer(); // Uses free public PeerServer cloud
-        let connections = [];
         let isBroadcaster = urlParams.get('host') === 'true';
+        let connections = [];
+
+        // FIX: The host MUST use the exact roomId so viewers know where to connect!
+        // Viewers get a random ID (undefined) so they don't clash with the host.
+        let peer = new Peer(isBroadcaster ? roomId : undefined); 
 
         peer.on('open', (id) => {
-            statusDiv.innerText = `Connected! ID: ${id}`;
             if (isBroadcaster) {
                 broadcasterControls.style.display = 'block';
-                statusDiv.innerText = "You are the Broadcaster.";
+                statusDiv.innerText = `Host Connected! Room ID: ${roomId}`;
+                
+                // FIX: Listen for viewers connecting immediately, not just after uploading
+                peer.on('connection', (conn) => {
+                    connections.push(conn);
+                    conn.on('open', () => {
+                        // If video is already playing when a viewer joins, catch them up
+                        if (video.src) {
+                            conn.send({ type: 'init', time: video.currentTime, paused: video.paused });
+                        }
+                    });
+                });
             } else {
-                statusDiv.innerText = "Viewer mode. Waiting for stream...";
+                statusDiv.innerText = `Viewer Mode. Connecting to room: ${roomId}...`;
                 connectToBroadcaster(roomId);
             }
         });
 
-        // If user is broadcaster, handle file selection
         function broadcastVideo() {
             const fileInput = document.getElementById('videoFile');
             if (fileInput.files.length === 0) return alert('Please select a video first!');
             
             const file = fileInput.files[0];
-            const fileUrl = URL.createObjectURL(file);
-            video.src = fileUrl;
+            video.src = URL.createObjectURL(file);
             video.play();
 
-            // Listen for connections from viewers
-            peer.on('connection', (conn) => {
-                connections.push(conn);
-                // Send current play state/time to new joiners
-                conn.on('open', () => {
-                    conn.send({ type: 'init', time: video.currentTime, paused: video.paused });
-                });
-            });
-
-            // Sync play/pause events to all connected viewers
+            // Sync playback events to all connected viewers
             video.onplay = () => broadcastData({ type: 'play', time: video.currentTime });
             video.onpause = () => broadcastData({ type: 'pause', time: video.currentTime });
             video.onseeking = () => broadcastData({ type: 'seek', time: video.currentTime });
         }
 
         function broadcastData(data) {
-            connections.forEach(conn => conn.send(data));
+            connections.forEach(conn => {
+                if (conn.open) conn.send(data);
+            });
         }
 
-        // If user is a viewer, connect to the host
         function connectToBroadcaster(hostId) {
-            // For a hardcoded test, viewers connect to a specific host peer ID
-            // In production, you can store the active host ID in a free JSON bin or URL query
             let conn = peer.connect(hostId);
             
+            conn.on('open', () => {
+                statusDiv.innerText = "Connected to host! Waiting for video...";
+            });
+
             conn.on('data', (data) => {
+                statusDiv.innerText = "Receiving live stream...";
                 if (data.type === 'init' || data.type === 'seek') {
                     video.currentTime = data.time;
                     if (data.type === 'init' && !data.paused) video.play();
@@ -98,6 +102,10 @@
                 if (data.type === 'pause') {
                     if (!video.paused) video.pause();
                 }
+            });
+
+            conn.on('error', (err) => {
+                statusDiv.innerText = "Failed to connect to host. Make sure the host is live.";
             });
         }
     </script>
