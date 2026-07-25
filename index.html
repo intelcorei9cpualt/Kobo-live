@@ -34,13 +34,11 @@
     </div>
 
     <script>
-        // ==========================================
-        // 🟢 YOUR SUPABASE CREDENTIALS CONNECTED
-        // ==========================================
         const SUPABASE_URL = 'https://zawjjbgeiwgnrfujgpja.supabase.co';
         const SUPABASE_ANON_KEY = 'sb_publishable_sA_711gLywPuaQi-QIOxaA_sZ-WFTNl';
         
-        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        // Fixed: Renamed variable to avoid JavaScript naming collision
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
         const client = new WebTorrent();
 
         const statusDiv = document.getElementById('status');
@@ -50,7 +48,7 @@
         const isBroadcaster = urlParams.get('host') === 'true';
         const roomId = urlParams.get('room') || 'kobo-default';
 
-        let videoElement = null; // Will hold our actual <video> tag
+        let videoElement = null;
 
         if (isBroadcaster) {
             document.getElementById('broadcasterControls').style.display = 'block';
@@ -62,29 +60,25 @@
 
                 statusDiv.innerText = "Processing video for network...";
                 
-                // 1. Seed the file to WebTorrent
                 client.seed(file, async function (torrent) {
                     statusDiv.innerText = "Live! Broadcasting to viewers.";
                     document.getElementById('loading-text').style.display = 'none';
                     
-                    // Render the video for the host
                     torrent.files[0].appendTo(videoContainer, { autoplay: true, controls: true }, (err, elem) => {
                         videoElement = elem;
                         
-                        // Sync play/pause/seek events to Supabase
                         videoElement.onplay = () => updateState(torrent.magnetURI, false);
                         videoElement.onpause = () => updateState(torrent.magnetURI, true);
                         videoElement.onseeked = () => updateState(torrent.magnetURI, videoElement.paused);
                     });
 
-                    // 2. Publish the Magnet Link to Supabase immediately
                     updateState(torrent.magnetURI, false);
                 });
             });
 
             async function updateState(magnetUri, isPaused) {
                 const time = videoElement ? videoElement.currentTime : 0;
-                await supabase.from('kobo_streams').upsert({
+                await supabaseClient.from('kobo_streams').upsert({
                     room_id: roomId,
                     magnet_uri: magnetUri,
                     playback_time: time,
@@ -94,12 +88,10 @@
             }
 
         } else {
-            // === VIEWER MODE ===
             statusDiv.innerText = `Viewer Mode. Connecting to room: ${roomId}...`;
 
-            // 1. Fetch current stream data if already live
             async function fetchInitialState() {
-                const { data } = await supabase.from('kobo_streams').select('*').eq('room_id', roomId).single();
+                const { data } = await supabaseClient.from('kobo_streams').select('*').eq('room_id', roomId).single();
                 if (data && data.magnet_uri) {
                     loadTorrent(data.magnet_uri, data.playback_time, data.is_playing);
                 } else {
@@ -108,20 +100,16 @@
             }
             fetchInitialState();
 
-            // 2. Listen for Realtime updates from Supabase (Play, Pause, Seek)
-            supabase.channel('kobo-updates')
+            supabaseClient.channel('kobo-updates')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'kobo_streams', filter: `room_id=eq.${roomId}` }, payload => {
                     const data = payload.new;
                     
-                    // If video isn't loaded yet, load it!
                     if (!videoElement && data.magnet_uri) {
                         loadTorrent(data.magnet_uri, data.playback_time, data.is_playing);
                         return;
                     }
 
-                    // If already loaded, sync the time and state
                     if (videoElement) {
-                        // Correct time drift if it's off by more than 2 seconds
                         if (Math.abs(videoElement.currentTime - data.playback_time) > 2) {
                             videoElement.currentTime = data.playback_time;
                         }
@@ -133,7 +121,7 @@
                 .subscribe();
 
             function loadTorrent(magnetUri, startTime, isPlaying) {
-                if (client.get(magnetUri)) return; // Already downloading
+                if (client.get(magnetUri)) return;
 
                 statusDiv.innerText = "Stream found! Connecting to host (may take a few seconds)...";
                 document.getElementById('loading-text').style.display = 'none';
@@ -141,10 +129,9 @@
                 client.add(magnetUri, function (torrent) {
                     statusDiv.innerText = "Watching Live Stream 🔴";
                     
-                    // Note: Viewers get controls disabled by default to force sync, muted for autoplay
                     torrent.files[0].appendTo(videoContainer, { autoplay: false, muted: true }, (err, elem) => {
                         videoElement = elem;
-                        videoElement.controls = false; // Viewers can't scrub
+                        videoElement.controls = false;
                         videoElement.currentTime = startTime;
                         if (isPlaying) videoElement.play().catch(e => console.log("Autoplay blocked"));
                     });
