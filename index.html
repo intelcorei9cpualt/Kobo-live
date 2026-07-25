@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kobo Live</title>
+    <!-- PeerJS CDN for free P2P connectivity -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background: #111; color: #fff; text-align: center; margin: 0; padding: 20px; }
+        video { width: 100%; max-width: 800px; border-radius: 8px; background: #000; }
+        .controls { margin-top: 15px; }
+        input, button { padding: 10px; margin: 5px; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+    <h1>Kobo Live 🟢</h1>
+    <div id="status">Connecting to Kobo network...</div>
+
+    <div>
+        <video id="videoPlayer" controls playsinline></video>
+    </div>
+
+    <div class="controls" id="broadcasterControls" style="display:none;">
+        <h3>Broadcaster Panel</h3>
+        <input type="file" id="videoFile" accept="video/*">
+        <button onclick="broadcastVideo()">Play & Broadcast to Viewers</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('videoPlayer');
+        const statusDiv = document.getElementById('status');
+        const broadcasterControls = document.getElementById('broadcasterControls');
+
+        // Generate a unique or shared room ID based on URL parameters (e.g., ?room=kobo1)
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room') || 'kobo-default-room';
+
+        let peer = new Peer(); // Uses free public PeerServer cloud
+        let connections = [];
+        let isBroadcaster = urlParams.get('host') === 'true';
+
+        peer.on('open', (id) => {
+            statusDiv.innerText = `Connected! ID: ${id}`;
+            if (isBroadcaster) {
+                broadcasterControls.style.display = 'block';
+                statusDiv.innerText = "You are the Broadcaster.";
+            } else {
+                statusDiv.innerText = "Viewer mode. Waiting for stream...";
+                connectToBroadcaster(roomId);
+            }
+        });
+
+        // If user is broadcaster, handle file selection
+        function broadcastVideo() {
+            const fileInput = document.getElementById('videoFile');
+            if (fileInput.files.length === 0) return alert('Please select a video first!');
+            
+            const file = fileInput.files[0];
+            const fileUrl = URL.createObjectURL(file);
+            video.src = fileUrl;
+            video.play();
+
+            // Listen for connections from viewers
+            peer.on('connection', (conn) => {
+                connections.push(conn);
+                // Send current play state/time to new joiners
+                conn.on('open', () => {
+                    conn.send({ type: 'init', time: video.currentTime, paused: video.paused });
+                });
+            });
+
+            // Sync play/pause events to all connected viewers
+            video.onplay = () => broadcastData({ type: 'play', time: video.currentTime });
+            video.onpause = () => broadcastData({ type: 'pause', time: video.currentTime });
+            video.onseeking = () => broadcastData({ type: 'seek', time: video.currentTime });
+        }
+
+        function broadcastData(data) {
+            connections.forEach(conn => conn.send(data));
+        }
+
+        // If user is a viewer, connect to the host
+        function connectToBroadcaster(hostId) {
+            // For a hardcoded test, viewers connect to a specific host peer ID
+            // In production, you can store the active host ID in a free JSON bin or URL query
+            let conn = peer.connect(hostId);
+            
+            conn.on('data', (data) => {
+                if (data.type === 'init' || data.type === 'seek') {
+                    video.currentTime = data.time;
+                    if (data.type === 'init' && !data.paused) video.play();
+                }
+                if (data.type === 'play') {
+                    if (video.paused) video.play();
+                }
+                if (data.type === 'pause') {
+                    if (!video.paused) video.pause();
+                }
+            });
+        }
+    </script>
+</body>
+</html>
