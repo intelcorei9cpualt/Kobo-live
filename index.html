@@ -1,143 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kobo Live</title>
-    <!-- WebTorrent for Free P2P Video Streaming -->
-    <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
-    <!-- Supabase for Realtime Play/Pause Syncing -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <style>
-        body { font-family: Arial, sans-serif; background: #111; color: #fff; text-align: center; margin: 0; padding: 20px; }
-        #video-container { width: 100%; max-width: 800px; margin: 0 auto; background: #000; border-radius: 8px; min-height: 300px; display: flex; align-items: center; justify-content: center;}
-        video { width: 100%; border-radius: 8px; }
-        .controls { margin-top: 15px; }
-        input, button { padding: 10px; margin: 5px; font-size: 16px; cursor: pointer; }
-        #status { margin-bottom: 15px; font-weight: bold; color: #4CAF50; }
-    </style>
-</head>
 <body>
+    
 
-    <h1>Kobo Live 🟢</h1>
-    <div id="status">Connecting to network...</div>
+    <h1>Kobo Live</h1>
+    <marquee>A privatly owned TV channel</marquee>
+    <iframe src="https://kobo-live.base44.app">
 
-    <div id="video-container">
-        <!-- WebTorrent will inject the video tag here -->
-        <p id="loading-text">Waiting for stream...</p>
-    </div>
 
-    <div class="controls" id="broadcasterControls" style="display:none;">
-        <h3>Broadcaster Panel</h3>
-        <input type="file" id="videoFile" accept="video/*">
-        <button id="broadcastBtn">Start Live Stream</button>
-    </div>
 
-    <script>
-        const SUPABASE_URL = 'https://zawjjbgeiwgnrfujgpja.supabase.co';
-        const SUPABASE_ANON_KEY = 'sb_publishable_sA_711gLywPuaQi-QIOxaA_sZ-WFTNl';
-        
-        // Fixed: Renamed variable to avoid JavaScript naming collision
-        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-        const client = new WebTorrent();
 
-        const statusDiv = document.getElementById('status');
-        const videoContainer = document.getElementById('video-container');
-        
-        const urlParams = new URLSearchParams(window.location.search);
-        const isBroadcaster = urlParams.get('host') === 'true';
-        const roomId = urlParams.get('room') || 'kobo-default';
-
-        let videoElement = null;
-
-        if (isBroadcaster) {
-            document.getElementById('broadcasterControls').style.display = 'block';
-            statusDiv.innerText = `Host Mode Ready. Room: ${roomId}`;
-
-            document.getElementById('broadcastBtn').addEventListener('click', () => {
-                const file = document.getElementById('videoFile').files[0];
-                if (!file) return alert('Select a video first!');
-
-                statusDiv.innerText = "Processing video for network...";
-                
-                client.seed(file, async function (torrent) {
-                    statusDiv.innerText = "Live! Broadcasting to viewers.";
-                    document.getElementById('loading-text').style.display = 'none';
-                    
-                    torrent.files[0].appendTo(videoContainer, { autoplay: true, controls: true }, (err, elem) => {
-                        videoElement = elem;
-                        
-                        videoElement.onplay = () => updateState(torrent.magnetURI, false);
-                        videoElement.onpause = () => updateState(torrent.magnetURI, true);
-                        videoElement.onseeked = () => updateState(torrent.magnetURI, videoElement.paused);
-                    });
-
-                    updateState(torrent.magnetURI, false);
-                });
-            });
-
-            async function updateState(magnetUri, isPaused) {
-                const time = videoElement ? videoElement.currentTime : 0;
-                await supabaseClient.from('kobo_streams').upsert({
-                    room_id: roomId,
-                    magnet_uri: magnetUri,
-                    playback_time: time,
-                    is_playing: !isPaused,
-                    updated_at: new Date().toISOString()
-                });
-            }
-
-        } else {
-            statusDiv.innerText = `Viewer Mode. Connecting to room: ${roomId}...`;
-
-            async function fetchInitialState() {
-                const { data } = await supabaseClient.from('kobo_streams').select('*').eq('room_id', roomId).single();
-                if (data && data.magnet_uri) {
-                    loadTorrent(data.magnet_uri, data.playback_time, data.is_playing);
-                } else {
-                    statusDiv.innerText = "Host is not live yet. Waiting...";
-                }
-            }
-            fetchInitialState();
-
-            supabaseClient.channel('kobo-updates')
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'kobo_streams', filter: `room_id=eq.${roomId}` }, payload => {
-                    const data = payload.new;
-                    
-                    if (!videoElement && data.magnet_uri) {
-                        loadTorrent(data.magnet_uri, data.playback_time, data.is_playing);
-                        return;
-                    }
-
-                    if (videoElement) {
-                        if (Math.abs(videoElement.currentTime - data.playback_time) > 2) {
-                            videoElement.currentTime = data.playback_time;
-                        }
-                        
-                        if (data.is_playing && videoElement.paused) videoElement.play().catch(e=>console.log("Autoplay blocked by browser"));
-                        if (!data.is_playing && !videoElement.paused) videoElement.pause();
-                    }
-                })
-                .subscribe();
-
-            function loadTorrent(magnetUri, startTime, isPlaying) {
-                if (client.get(magnetUri)) return;
-
-                statusDiv.innerText = "Stream found! Connecting to host (may take a few seconds)...";
-                document.getElementById('loading-text').style.display = 'none';
-
-                client.add(magnetUri, function (torrent) {
-                    statusDiv.innerText = "Watching Live Stream 🔴";
-                    
-                    torrent.files[0].appendTo(videoContainer, { autoplay: false, muted: true }, (err, elem) => {
-                        videoElement = elem;
-                        videoElement.controls = false;
-                        videoElement.currentTime = startTime;
-                        if (isPlaying) videoElement.play().catch(e => console.log("Autoplay blocked"));
-                    });
-                });
-            }
-        }
-    </script>
+    </iframe>
+    <b>Kobo Live will not be running very often.</b>
+    <i>2026 Kobo Live | Kobo live is not afiliated with Kobo.</i>
 </body>
+</head>
 </html>
